@@ -298,44 +298,32 @@ def compute_population_loss_iso(gamma: float, L: int, alpha: float,
     # For x ~ N(0, I), Σ̂ = (1/P) X^T X has MP distribution
     # with λ_+ = (1 + 1/√α)² and λ_- = (1 - 1/√α)² if α >= 1
 
-    # Numerical integration over MP density
+    # Numerical integration over MP density.
     n_samples = 10000
+    lambda_minus = (1 - 1 / np.sqrt(alpha)) ** 2
+    lambda_plus = (1 + 1 / np.sqrt(alpha)) ** 2
 
-    if alpha >= 1:
-        # Continuous part of MP
-        lambda_minus = (1 - 1/np.sqrt(alpha))**2
-        lambda_plus = (1 + 1/np.sqrt(alpha))**2
+    # Use a change of variables to handle the integrable singularity near lambda_minus.
+    t = np.linspace(0.0, 1.0, n_samples)
+    lambdas = lambda_minus + (lambda_plus - lambda_minus) * (t**2)
+    lambdas = np.maximum(lambdas, 1e-12)
 
-        # Sample from MP distribution (approximate)
-        lambdas = np.linspace(lambda_minus + 1e-6, lambda_plus - 1e-6, n_samples)
+    density = (alpha / (2 * np.pi)) * np.sqrt(
+        np.maximum(0, (lambda_plus - lambdas) * (lambdas - lambda_minus))
+    ) / lambdas
 
-        # MP density: ρ(λ) = (α/(2π)) * √((λ_+ - λ)(λ - λ_-))/λ
-        density = (alpha / (2 * np.pi)) * np.sqrt((lambda_plus - lambdas) *
-                                                    (lambdas - lambda_minus)) / lambdas
-        density = density / np.sum(density)  # Normalize
+    dt = t[1] - t[0]
+    dlambda_dt = 2 * (lambda_plus - lambda_minus) * t
+    weights = density * dlambda_dt * dt
 
-        # Compute loss
-        residuals = (1 - gamma * lambdas / L) ** (2 * L)
-        loss = np.sum(density * residuals)
+    residuals = (1 - gamma * lambdas / L) ** (2 * L)
+    continuous_loss = np.sum(weights * residuals)
 
-    else:
-        # α < 1: there's a point mass at 0
-        lambda_minus = (1 - 1/np.sqrt(alpha))**2
-        lambda_plus = (1 + 1/np.sqrt(alpha))**2
-
-        # Point mass weight at 0
+    if alpha < 1:
         mass_at_zero = 1 - alpha
+        return mass_at_zero * 1.0 + continuous_loss
 
-        # Continuous part
-        lambdas = np.linspace(lambda_minus + 1e-6, lambda_plus - 1e-6, n_samples)
-        density = (alpha / (2 * np.pi)) * np.sqrt((lambda_plus - lambdas) *
-                                                    (lambdas - lambda_minus)) / lambdas
-        density = density / np.sum(density) * alpha  # Scale by alpha (continuous part weight)
-
-        residuals = (1 - gamma * lambdas / L) ** (2 * L)
-        loss = mass_at_zero * 1.0 + np.sum(density * residuals)  # 1.0 at λ=0
-
-    return loss
+    return continuous_loss
 
 
 def optimal_gamma_iso(L: int, alpha: float) -> float:

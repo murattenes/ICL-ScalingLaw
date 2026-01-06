@@ -181,48 +181,30 @@ def compute_theory_loss_iso(gamma: float, L: int, alpha: float) -> float:
     where λ follows Marchenko-Pastur distribution.
     """
     n_samples = 5000
+    lambda_minus = (1 - 1 / np.sqrt(alpha)) ** 2
+    lambda_plus = (1 + 1 / np.sqrt(alpha)) ** 2
 
-    if alpha >= 1:
-        # MP distribution bounds
-        lambda_minus = (1 - 1/np.sqrt(alpha))**2
-        lambda_plus = (1 + 1/np.sqrt(alpha))**2
+    # Use a change of variables to handle the integrable singularity near lambda_minus.
+    t = np.linspace(0.0, 1.0, n_samples)
+    lambdas = lambda_minus + (lambda_plus - lambda_minus) * (t**2)
+    lambdas = np.maximum(lambdas, 1e-12)
 
-        # Sample eigenvalues
-        lambdas = np.linspace(lambda_minus + 1e-8, lambda_plus - 1e-8, n_samples)
+    density = (alpha / (2 * np.pi)) * np.sqrt(
+        np.maximum(0, (lambda_plus - lambdas) * (lambdas - lambda_minus))
+    ) / lambdas
 
-        # MP density
-        density = (alpha / (2 * np.pi)) * np.sqrt(
-            np.maximum(0, (lambda_plus - lambdas) * (lambdas - lambda_minus))
-        ) / np.maximum(lambdas, 1e-10)
+    dt = t[1] - t[0]
+    dlambda_dt = 2 * (lambda_plus - lambda_minus) * t
+    weights = density * dlambda_dt * dt
 
-        # Normalize
-        dlambda = lambdas[1] - lambdas[0]
-        density = density / (np.sum(density) * dlambda)
+    residuals = (1 - gamma * lambdas / L) ** (2 * L)
+    continuous_loss = np.sum(weights * residuals)
 
-        # Compute loss
-        residuals = (1 - gamma * lambdas / L) ** (2 * L)
-        loss = np.sum(density * residuals) * dlambda
-
-    else:
-        # α < 1: point mass at 0
-        lambda_minus = (1 - 1/np.sqrt(alpha))**2
-        lambda_plus = (1 + 1/np.sqrt(alpha))**2
+    if alpha < 1:
         mass_at_zero = 1 - alpha
+        return mass_at_zero * 1.0 + continuous_loss
 
-        lambdas = np.linspace(lambda_minus + 1e-8, lambda_plus - 1e-8, n_samples)
-        density = (alpha / (2 * np.pi)) * np.sqrt(
-            np.maximum(0, (lambda_plus - lambdas) * (lambdas - lambda_minus))
-        ) / np.maximum(lambdas, 1e-10)
-
-        dlambda = lambdas[1] - lambdas[0]
-        density = density / (np.sum(density) * dlambda)
-
-        residuals = (1 - gamma * lambdas / L) ** (2 * L)
-        continuous_loss = np.sum(density * residuals) * dlambda
-
-        loss = mass_at_zero * 1.0 + alpha * continuous_loss
-
-    return loss
+    return continuous_loss
 
 
 def find_optimal_gamma_theory(L: int, alpha: float) -> Tuple[float, float]:
