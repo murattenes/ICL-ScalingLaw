@@ -391,7 +391,7 @@ if __name__ == "__main__":
     # Run Task 5 comparison
     linear_results, twolayer_results = run_task5_comparison(
         D=64,
-        n_steps=6000,
+        n_steps=12000,
         lr=0.01,
         sigma=0.0,  # No noise for cleaner comparison
         device=device,

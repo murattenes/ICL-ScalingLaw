@@ -481,7 +481,8 @@ def run_figure_3c_experimental(
     for theta in tqdm(thetas, desc="Evaluating"):
         # Rotate covariance
         Sigma_prime = rotate_covariance(Sigma, theta, S)
-        Omega_prime = rotate_covariance(Omega, theta, S)
+        # Paper Figure 3(c) rotates the INPUT covariance Σ only; keep task covariance Ω fixed.
+        Omega_prime = Omega
 
         for L in depths:
             ood_loss = evaluate_ood_loss(
@@ -569,7 +570,8 @@ def compute_theoretical_ood_loss(
 
     # Rotate covariances
     Sigma_prime = rotate_covariance(Sigma, theta, S)
-    Omega_prime = rotate_covariance(Omega, theta, S)
+    # Paper Figure 3(c) rotates the INPUT covariance Σ only; keep task covariance Ω fixed.
+    Omega_prime = Omega
 
     # Compute Sigma^{-1}
     Sigma_inv = torch.linalg.inv(Sigma + 1e-6 * torch.eye(D, device=device))
@@ -581,8 +583,8 @@ def compute_theoretical_ood_loss(
     # Compute M^L
     M_L = torch.linalg.matrix_power(M, L)
 
-    # Compute loss: tr(Omega' @ M_L^T @ Sigma' @ M_L)
-    loss = torch.trace(Omega_prime @ M_L.T @ Sigma_prime @ M_L)
+    # Compute loss: tr(Ω' M_L^T Σ' M_L) with normalized trace to match the paper's O(1) loss scale.
+    loss = torch.trace(Omega_prime @ M_L.T @ Sigma_prime @ M_L) / D
 
     return loss.item()
 
@@ -703,7 +705,8 @@ def run_figure_3c_comparison(
     experimental_results = {L: [] for L in depths}
     for theta in tqdm(thetas, desc="Experimental"):
         Sigma_prime = rotate_covariance(Sigma, theta, S)
-        Omega_prime = rotate_covariance(Omega, theta, S)
+        # Paper Figure 3(c) rotates Σ only; keep Ω fixed.
+        Omega_prime = Omega
         for L in depths:
             ood_loss = evaluate_ood_loss(
                 trained_models[L], Sigma_prime, Omega_prime,

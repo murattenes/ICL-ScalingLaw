@@ -424,7 +424,8 @@ def run_task4_comparison(
     for theta in tqdm(thetas, desc="Evaluating OOD"):
         # Rotate base covariance by theta
         Sigma_shifted = rotate_covariance(Sigma_base, theta, S)
-        Omega_shifted = rotate_covariance(Omega_base, theta, S)
+        # Align with paper's distribution-shift setup: rotate Σ only, keep Ω fixed.
+        Omega_shifted = Omega_base
 
         for L in depths:
             # Evaluate FS model
