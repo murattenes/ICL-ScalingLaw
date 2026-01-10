@@ -419,6 +419,13 @@ def run_figure_3c_experimental(
     - The paper's Figure 3c assumes perfect convergence
     - For experimental version, we initialize near optimal to ensure convergence
 
+    NOTE ON init_at_optimal (from review):
+    - When init_at_optimal=True (default), we initialize Γ≈LΣ⁻¹ and use Adam
+    - This is primarily a CONVERGENCE CHECK to verify Result 5 (OOD loss formula)
+    - It is NOT "training from zero" as described in Results 4/3(a,b)
+    - For dynamics experiments (tracking gradient flow from scratch), set init_at_optimal=False
+    - The paper's theoretical Figure 3(c) assumes perfect convergence anyway
+
     Args:
         D: Dimension
         n_train_steps: Training steps per model
@@ -428,7 +435,9 @@ def run_figure_3c_experimental(
         alpha: Context length ratio P/D (use large alpha for convergence)
         device: Device
         save_path: Path to save figure
-        init_at_optimal: Initialize Gamma near L*Sigma^{-1} for faster convergence
+        init_at_optimal: Initialize Gamma near L*Sigma^{-1} for faster convergence.
+                         Use True for convergence checks (demonstrating Result 5).
+                         Use False for training dynamics experiments.
     """
     print("=" * 60)
     print("Figure 3(c): Brittleness to Distribution Shift (Experimental)")

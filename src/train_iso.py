@@ -76,12 +76,14 @@ def train_reduced_gamma_model(
         # Training step: sample B contexts and update
         total_loss = 0.0
 
+        # Zero gradients BEFORE the loop to accumulate across all B contexts
+        optimizer.zero_grad()
+
         for _ in range(B):
             # Generate a context
             X, y, X_star, y_star, _ = generate_iso_data(D, P, K, sigma, device)
 
             # Compute loss and accumulate gradients
-            optimizer.zero_grad()
             loss = compute_icl_loss(model, X, y, X_star, y_star)
             loss.backward()
             total_loss += loss.item()
@@ -118,6 +120,7 @@ def train_reduced_gamma_fast(
     alpha: float,
     n_steps: int = 6000,
     lr: float = 0.01,
+    kappa: float = 1.0,  # Fixed K/D ratio (paper keeps κ constant while varying α)
     sigma: float = 0.0,
     eval_every: int = 10,
     n_eval_contexts: int = 100,
@@ -128,12 +131,15 @@ def train_reduced_gamma_fast(
     Faster training using batched operations and gradient flow approximation.
 
     This version uses a single context per step but averages over many eval contexts.
+
+    Note: The paper (Section 2.1) uses proportional asymptotics where P, K, B, D → ∞
+    with P/D = α, K/D = κ, B/D = τ. Crucially, κ and τ are held FIXED while α varies.
     """
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    P = max(1, int(alpha * D))  # Context length
-    K = max(1, int(alpha * D))  # Eval points
+    P = max(1, int(alpha * D))  # Context length (P/D = α varies)
+    K = max(1, int(kappa * D))  # Eval points (K/D = κ fixed)
 
     # Initialize model
     model = ReducedGammaModel(D=D, L=L, init_gamma=0.0).to(device)
@@ -278,7 +284,8 @@ def run_figure_1b(D: int = 32, alpha: float = 1.0, n_steps: int = 6000,
     print(f"Running Figure 1b: α={alpha}, D={D}")
 
     depths = [1, 2, 4, 8, 16]
-    colors = plt.cm.plasma(np.linspace(0.1, 0.9, len(depths)))
+    # Use distinct colors for better contrast (matching paper's style)
+    colors = ['#1f77b4', '#9467bd', '#d62728', '#ff7f0e', '#2ca02c']  # blue, purple, red, orange, green
 
     results = {}
 
@@ -331,7 +338,8 @@ def run_figure_1c(D: int = 32, n_steps: int = 8000, device: str = 'cpu',
     depths = [1, 2, 4, 8, 16]
     alphas = np.logspace(-1, 1, 15)  # 0.1 to 10
 
-    colors = plt.cm.plasma(np.linspace(0.1, 0.9, len(depths)))
+    # Use distinct colors for better contrast
+    colors = ['#1f77b4', '#9467bd', '#d62728', '#ff7f0e', '#2ca02c']
     markers = ['o', 's', 'D', '^', 'v']
 
     experimental_results = {}
@@ -363,18 +371,17 @@ def run_figure_1c(D: int = 32, n_steps: int = 8000, device: str = 'cpu',
     # Plot
     fig, ax = plt.subplots(figsize=(8, 6))
 
-    # Plot theory curves (solid lines)
+    # Plot theory curves (solid lines) - no individual labels
     for i, L in enumerate(depths):
-        ax.plot(alphas, theory_results[L], color=colors[i], linewidth=2,
-                label=f'L={L}' if i == 0 else None)
+        ax.plot(alphas, theory_results[L], color=colors[i], linewidth=2)
 
-    # Plot experimental points
+    # Plot experimental points with markers and labels
     for i, L in enumerate(depths):
         ax.scatter(alphas, experimental_results[L], color=colors[i],
                    marker=markers[i], s=40, edgecolors='black', linewidths=0.5,
                    label=f'L={L}')
 
-    # Add theory line to legend
+    # Add single "Theory" entry to legend (black line)
     ax.plot([], [], 'k-', linewidth=2, label='Theory')
 
     ax.set_xscale('log')
@@ -437,7 +444,8 @@ def run_all_figure_1(D: int = 32, device: str = 'cpu', output_dir: str = 'result
 
     # (b) α=1, varying L
     depths = [1, 2, 4, 8, 16]
-    colors_b = plt.cm.plasma(np.linspace(0.1, 0.9, len(depths)))
+    # Use distinct colors for better contrast
+    colors_b = ['#1f77b4', '#9467bd', '#d62728', '#ff7f0e', '#2ca02c']
     for i, L in enumerate(depths):
         steps, losses = results_1b[L]
         axes[1].plot(steps, losses, color=colors_b[i], label=f'L = {L}', linewidth=1.2)
@@ -480,4 +488,5 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
 
     # Run all experiments
-    run_all_figure_1(D=32, device=device, output_dir='results')
+    # Use D=64 for better match with paper's large-D asymptotics
+    run_all_figure_1(D=64, device=device, output_dir='results')

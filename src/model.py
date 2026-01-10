@@ -37,7 +37,7 @@ class ReducedGammaModel(nn.Module):
 
     def compute_empirical_covariance(self, X: torch.Tensor) -> torch.Tensor:
         """
-        Compute empirical covariance Σ̂ = (1/P) X X^T
+        Compute empirical covariance Σ̂ = (1/P) X^T X
 
         Args:
             X: Input data of shape (P, D)

@@ -58,6 +58,20 @@ class ReducedGammaModelRRS(nn.Module):
 
     This is because random rotations prevent the model from learning any specific
     covariance structure - it must learn a rotation-invariant solution.
+
+    NOTE ON IMPLEMENTATION CHOICE (from review):
+    This implementation enforces scalar Γ=γI from the START (single parameter).
+    This matches Result 6's CONSEQUENCE (that RRS converges to isotropic solution),
+    but does not explicitly demonstrate that a full-matrix Γ would isotropize
+    under random rotations during training.
+
+    To fully demonstrate Result 6's dynamics, one could:
+    1. Start with full D×D Γ matrix initialized randomly
+    2. Train under RRS (random rotations each context)
+    3. Observe Γ converging toward γI form empirically
+
+    The current approach is sufficient for Task 4's goal (comparing FS vs RRS
+    robustness) since it implements the converged behavior correctly.
     """
 
     def __init__(self, D: int, L: int = 1, init_gamma: float = 0.1):
