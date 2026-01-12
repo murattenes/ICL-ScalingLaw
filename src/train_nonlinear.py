@@ -8,8 +8,8 @@ Key idea from TA:
 - 2-Layer NN extension: F(x*) = (1/LP) a^T @ ReLU(W @ (x* ⊙ rep))
 
 Data:
-- Linear: y = β·x / √D + σε
-- Nonlinear: y = ReLU(β·x / √D) + σε (same noise mechanism as paper)
+- Linear: y = β·x / √D + σε (paper's ISO setting)
+- Nonlinear: y = ReLU(β·x / √D) + σε (non-centered, both models have bias for fair comparison)
 
 Experiment:
 - Train both models on nonlinear data
@@ -34,41 +34,58 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from model import ReducedGammaModel, compute_icl_loss
 
 
+class ReducedGammaModelWithBias(ReducedGammaModel):
+    """
+    ReducedGammaModel with an added output bias for non-centered targets.
+
+    Architecture: f(x*) = (1/LP) x*^T @ rep + bias
+
+    The bias is NOT divided by (L*P) - it's an intercept in output space.
+    """
+
+    def __init__(self, D: int, L: int, init_gamma: float = 0.0, init_bias: float = 0.0):
+        super().__init__(D=D, L=L, init_gamma=init_gamma)
+        self.bias = nn.Parameter(torch.tensor(init_bias, dtype=torch.float32))
+
+    def forward(self, X, y, X_star):
+        return super().forward(X, y, X_star) + self.bias
+
+
 class TwoLayerReducedGammaModel(nn.Module):
     """
-    2-layer NN extension of ReducedGammaModel.
+    2-layer NN extension of ReducedGammaModel with SKIP CONNECTION.
 
-    Architecture: F(x*) = (1/LP) a^T @ ReLU(W @ φ(x*))
-    where φ(x*) = x* ⊙ rep (element-wise product of test point with representation)
+    Architecture: F(x*) = linear_pred + mlp_correction + b2
+    where:
+        - linear_pred = (1/LP) x*^T @ rep  (original reduced-Γ output)
+        - mlp_correction = a^T @ ReLU(W @ φ_normalized + b1)
+        - φ_normalized = φ / ||rep|| where φ = x* ⊙ rep
 
-    The representation is computed the same way as the linear model:
-    - rep = γ * S @ X^T @ y
-    - S = Σ_{ℓ=0}^{L-1} M^ℓ where M = I - (γ/L) Σ̂
+    This is a STRICT SUPERSET of the linear model:
+    - If a=0, b2=0, we recover the linear model exactly.
 
-    Trainable parameters: γ, W, a (ALL THREE)
+    Trainable parameters: γ, W, a, b1, b2
+    - b1: hidden bias (helps learn thresholds)
+    - b2: output bias (intercept in output space)
     """
 
     def __init__(self, D: int, L: int, hidden_dim: int = None, init_gamma: float = 0.001):
-        """
-        Args:
-            D: Input dimension
-            L: Depth (number of layers)
-            hidden_dim: Hidden layer dimension (default: D)
-            init_gamma: Initial value for gamma
-        """
         super().__init__()
         self.D = D
         self.L = L
-        m = hidden_dim if hidden_dim else D  # m = D by default
+        # Use hidden_dim >= 2D for expressivity
+        m = hidden_dim if hidden_dim else 2 * D
 
         # ALL TRAINABLE parameters
         self.gamma = nn.Parameter(torch.tensor(init_gamma, dtype=torch.float32))
-        self.W = nn.Parameter(torch.randn(m, D) * 0.1)  # (m, D)
-        self.a = nn.Parameter(torch.randn(m) * 0.1)     # (m,)
+        self.W = nn.Parameter(torch.randn(m, D) * 0.01)  # Smaller init
+        self.a = nn.Parameter(torch.zeros(m))  # Start at zero: recovers linear model
+        self.b1 = nn.Parameter(torch.zeros(m))  # Hidden bias
+        self.b2 = nn.Parameter(torch.tensor(0.0))  # Output bias (intercept)
 
     def forward(self, X: torch.Tensor, y: torch.Tensor, X_star: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass with 2-layer NN head.
+        Forward pass with skip connection: linear_pred + mlp_correction.
 
         Args:
             X: Training inputs (P, D)
@@ -98,15 +115,26 @@ class TwoLayerReducedGammaModel(nn.Module):
         # Representation: rep = γ * S @ X^T @ y
         rep = self.gamma * (S @ (X.T @ y))  # (D,)
 
-        # 2-layer NN head (instead of linear readout)
-        # φ(x*) = x* ⊙ rep (element-wise product)
-        phi = X_star * rep  # (K, D) broadcasting
+        # === LINEAR PREDICTION (skip connection) ===
+        # This is exactly the original reduced-Γ model output
+        linear_pred = (X_star @ rep) / (L * P)  # (K,)
 
-        # Hidden layer: ReLU(W @ φ)
-        hidden = F.relu(phi @ self.W.T)  # (K, m)
+        # === MLP CORRECTION ===
+        # Normalize rep to stabilize gradients across depths
+        rep_norm = torch.norm(rep) + 1e-8
+        rep_normalized = rep / rep_norm
 
-        # Output: (1/LP) a^T @ hidden
-        predictions = (hidden @ self.a) / (L * P)  # (K,)
+        # φ(x*) = x* ⊙ rep_normalized (element-wise product)
+        phi = X_star * rep_normalized  # (K, D) broadcasting
+
+        # Hidden layer with bias: ReLU(W @ φ + b1)
+        hidden = F.relu(phi @ self.W.T + self.b1)  # (K, m)
+
+        # MLP correction (no 1/LP division since we normalized)
+        mlp_correction = hidden @ self.a  # (K,)
+
+        # Final: skip + correction + bias
+        predictions = linear_pred + mlp_correction + self.b2  # (K,)
 
         return predictions
 
@@ -119,15 +147,16 @@ def generate_nonlinear_iso_data(
     device: str = 'cpu'
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Generate NON-LINEAR isotropic data.
+    Generate NON-LINEAR isotropic data (non-centered).
 
     Data generation (extension of paper's ISO setting):
         β ~ N(0, I)
         x ~ N(0, I)
         z = β·x / √D
-        y = ReLU(z) + σε     (ReLU applied BEFORE noise)
+        y = ReLU(z) + σε
 
-    This is the paper's ISO data with ReLU non-linearity added.
+    Note: y has positive mean E[ReLU(z)] > 0. Both models (linear and 2-layer)
+    include bias terms to handle this fairly.
 
     Args:
         D: Dimension
@@ -202,13 +231,21 @@ def train_model_on_nonlinear_data(
     P = max(1, int(alpha * D))  # Context length
     K = max(1, int(alpha * D))  # Test points
 
-    # Initialize model
+    # Initialize model (both have bias for fair comparison on non-centered data)
     if model_type == 'linear':
-        model = ReducedGammaModel(D=D, L=L, init_gamma=0.0).to(device)
+        model = ReducedGammaModelWithBias(D=D, L=L, init_gamma=0.0, init_bias=0.0).to(device)
+        # Linear model uses SGD (simple convex problem)
+        optimizer = optim.SGD(model.parameters(), lr=lr)
     else:  # '2layer'
-        model = TwoLayerReducedGammaModel(D=D, L=L, hidden_dim=D, init_gamma=0.001).to(device)
-
-    optimizer = optim.SGD(model.parameters(), lr=lr)
+        # 2-layer model: hidden_dim=2D by default, init gamma near good regime
+        model = TwoLayerReducedGammaModel(D=D, L=L, init_gamma=0.5).to(device)
+        # Use Adam with separate learning rates:
+        # - Smaller lr for gamma (the representation parameter)
+        # - Larger lr for MLP parameters (W, a, b1, b2)
+        optimizer = optim.Adam([
+            {'params': [model.gamma], 'lr': lr * 0.1},  # Smaller lr for gamma
+            {'params': [model.W, model.a, model.b1, model.b2], 'lr': lr}  # Full lr for MLP
+        ])
 
     steps = []
     losses = []
@@ -265,6 +302,8 @@ def run_task5_comparison(
     print("Task 5: Linear vs 2-Layer NN on Non-Linear Data")
     print("=" * 70)
     print(f"\nData: y = ReLU(β·x / √D) + σε  (σ = {sigma})")
+    print(f"2-Layer NN: skip connection + MLP correction (strict superset of linear)")
+    print(f"Optimizer: Linear=SGD, 2-Layer=Adam (separate lr for γ vs MLP)")
     print(f"D = {D}, n_steps = {n_steps}, lr = {lr}")
     print("=" * 70)
 
@@ -321,7 +360,7 @@ def run_task5_comparison(
         ax.plot(steps, losses, color=colors[i], label=f'L = {L}', linewidth=1.5)
     ax.set_xlabel('Training Step', fontsize=12)
     ax.set_ylabel('Loss (MSE)', fontsize=12)
-    ax.set_title('Linear Model (γ only)\non Nonlinear Data', fontsize=11)
+    ax.set_title('Linear Model (γ + bias, SGD)\non Nonlinear Data', fontsize=11)
     ax.legend(fontsize=10)
     ax.set_ylim(0, 1.0)
     ax.grid(True, alpha=0.3)
@@ -333,13 +372,13 @@ def run_task5_comparison(
         ax.plot(steps, losses, color=colors[i], label=f'L = {L}', linewidth=1.5)
     ax.set_xlabel('Training Step', fontsize=12)
     ax.set_ylabel('Loss (MSE)', fontsize=12)
-    ax.set_title('2-Layer NN (γ, W, a)\non Nonlinear Data', fontsize=11)
+    ax.set_title('2-Layer NN (skip + MLP, Adam)\non Nonlinear Data', fontsize=11)
     ax.legend(fontsize=10)
     ax.set_ylim(0, 1.0)
     ax.grid(True, alpha=0.3)
 
-    plt.suptitle(r'Task 5: Linear vs 2-Layer NN on Nonlinear Data ($y = \mathrm{ReLU}(\beta \cdot x / \sqrt{D}) + \sigma\epsilon$)',
-                 fontsize=13, fontweight='bold')
+    plt.suptitle(r'Task 5: Linear vs 2-Layer NN on Nonlinear Data ($y = \mathrm{ReLU}(\beta \cdot x / \sqrt{D})$)',
+                 fontsize=12, fontweight='bold')
     plt.tight_layout()
 
     if save_path:
@@ -367,9 +406,10 @@ def run_task5_comparison(
 
     print("\n" + "=" * 70)
     print("INTERPRETATION:")
-    print("- If 2-Layer has lower loss: Nonlinear head helps on nonlinear data")
-    print("- If similar loss: Nonlinearity may not be captured by this architecture")
-    print("- Depth effect: May differ between linear and nonlinear models")
+    print("- 2-Layer NN is a STRICT SUPERSET of linear (a=0 recovers linear)")
+    print("- 2-Layer should achieve <= loss of linear (by design)")
+    print("- Skip connection ensures stable training while MLP learns corrections")
+    print("- Positive improvement = 2-Layer outperforms linear on nonlinear data")
     print("=" * 70)
 
     return linear_results, twolayer_results
